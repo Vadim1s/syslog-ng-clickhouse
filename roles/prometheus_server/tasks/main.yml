@@ -1,0 +1,141 @@
+---
+- name: Validate Prometheus topology and architecture
+  ansible.builtin.assert:
+    that:
+      - groups['syslog_servers'] | length == 1
+      - inventory_hostname == groups['syslog_servers'][0]
+      - ansible_facts.architecture in ['x86_64', 'aarch64']
+
+- name: Resolve the Prometheus release architecture
+  ansible.builtin.set_fact:
+    prometheus_architecture: >-
+      {{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}
+    prometheus_archive: >-
+      prometheus-{{ prometheus_version }}.linux-{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}.tar.gz
+
+- name: Create the Prometheus system account
+  ansible.builtin.user:
+    name: prometheus
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ prometheus_data_dir }}"
+    create_home: false
+
+- name: Create Prometheus directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: prometheus
+    group: prometheus
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ prometheus_config_dir }}", mode: "0750" }
+    - { path: "{{ prometheus_config_dir }}/rules", mode: "0750" }
+    - { path: "{{ prometheus_data_dir }}", mode: "0750" }
+
+- name: Check the installed Prometheus version
+  ansible.builtin.command: "{{ prometheus_install_dir }}/prometheus --version"
+  register: prometheus_version_output
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install the selected Prometheus release
+  when: prometheus_version not in prometheus_version_output.stdout
+  block:
+    - name: Download Prometheus with the upstream checksum manifest
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-{{ prometheus_architecture }}.tar.gz
+        dest: "/tmp/{{ prometheus_archive }}"
+        mode: "0644"
+        checksum: >-
+          sha256:https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/sha256sums.txt
+
+    - name: Extract Prometheus
+      ansible.builtin.unarchive:
+        src: "/tmp/{{ prometheus_archive }}"
+        dest: /tmp
+        remote_src: true
+
+    - name: Install Prometheus binaries
+      ansible.builtin.copy:
+        src: "/tmp/prometheus-{{ prometheus_version }}.linux-{{ prometheus_architecture }}/{{ item }}"
+        dest: "{{ prometheus_install_dir }}/{{ item }}"
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+      loop:
+        - prometheus
+        - promtool
+      notify: Validate and restart Prometheus
+
+    - name: Install Prometheus console assets
+      ansible.builtin.copy:
+        src: "/tmp/prometheus-{{ prometheus_version }}.linux-{{ prometheus_architecture }}/{{ item }}/"
+        dest: "{{ prometheus_config_dir }}/{{ item }}/"
+        owner: prometheus
+        group: prometheus
+        mode: "0640"
+        directory_mode: "0750"
+        remote_src: true
+      loop:
+        - consoles
+        - console_libraries
+      notify: Validate and restart Prometheus
+
+    - name: Remove temporary Prometheus files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/{{ prometheus_archive }}"
+        - "/tmp/prometheus-{{ prometheus_version }}.linux-{{ prometheus_architecture }}"
+
+- name: Deploy the Prometheus configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ prometheus_config_dir }}/prometheus.yml"
+    owner: prometheus
+    group: prometheus
+    mode: "0640"
+  notify: Validate and restart Prometheus
+
+- name: Deploy Prometheus alerting rules
+  ansible.builtin.template:
+    src: alerts.yml.j2
+    dest: "{{ prometheus_config_dir }}/rules/platform.yml"
+    owner: prometheus
+    group: prometheus
+    mode: "0640"
+  notify: Validate and restart Prometheus
+
+- name: Deploy the Prometheus systemd service
+  ansible.builtin.template:
+    src: prometheus.service.j2
+    dest: /etc/systemd/system/prometheus.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Validate and restart Prometheus
+
+- name: Enable and start Prometheus
+  ansible.builtin.systemd:
+    name: prometheus
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Apply and validate Prometheus changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Prometheus readiness
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ prometheus_web_port }}/-/ready"
+    method: GET
+    status_code: 200
+  register: prometheus_ready
+  retries: 12
+  delay: 5
+  until: prometheus_ready.status == 200

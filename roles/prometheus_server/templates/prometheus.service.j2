@@ -1,0 +1,38 @@
+[Unit]
+Description=Prometheus Monitoring System
+Documentation=https://prometheus.io/docs/prometheus/latest/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+ExecStart={{ prometheus_install_dir }}/prometheus \
+  --config.file={{ prometheus_config_dir }}/prometheus.yml \
+  --storage.tsdb.path={{ prometheus_data_dir }} \
+  --storage.tsdb.retention.time={{ prometheus_retention_time }} \
+{% if prometheus_retention_size not in ['', '0', '0B'] %}  --storage.tsdb.retention.size={{ prometheus_retention_size }} \
+{% endif %}  --storage.tsdb.wal-compression \
+  --web.console.libraries={{ prometheus_config_dir }}/console_libraries \
+  --web.console.templates={{ prometheus_config_dir }}/consoles \
+  --web.listen-address={{ prometheus_web_listen_address }}:{{ prometheus_web_port }}
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths={{ prometheus_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

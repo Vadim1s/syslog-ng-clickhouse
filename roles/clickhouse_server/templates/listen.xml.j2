@@ -1,0 +1,6 @@
+<clickhouse>
+    <!-- The database is intentionally not exposed to the LAN. -->
+    <listen_host replace="replace">{{ clickhouse_http_host }}</listen_host>
+    <http_port>{{ clickhouse_http_port }}</http_port>
+    <tcp_port>{{ clickhouse_native_port }}</tcp_port>
+</clickhouse>

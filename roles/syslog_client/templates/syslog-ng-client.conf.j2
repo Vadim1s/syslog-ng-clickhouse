@@ -1,0 +1,85 @@
+@version: 4.12
+@include "scl.conf"
+
+options {
+    chain-hostnames(no);
+    create-dirs(yes);
+    flush-lines(1);
+    keep-hostname(yes);
+    stats-freq(0);
+    stats-level(2);
+    threaded(yes);
+    ts-format(iso);
+    use-dns(no);
+};
+
+source s_system {
+    system();
+};
+
+source s_internal {
+    internal();
+};
+
+source s_metrics {
+    stats-exporter-dont-log(
+        ip("{{ syslog_metrics_bind_address_resolved }}")
+        port({{ syslog_metrics_port }})
+        stat-type("stats")
+        stat-format("prometheus")
+        scrape-pattern("GET /metrics*")
+        scrape-freq-limit({{ syslog_metrics_scrape_frequency_limit }})
+        single-instance(yes)
+    );
+};
+
+destination d_local {
+    file(
+        "{{ syslog_local_file }}"
+        owner("root")
+        group("adm")
+        perm(0640)
+        create-dirs(yes)
+    );
+};
+
+destination d_central_tls {
+    network(
+        "{{ syslog_server_address }}"
+        port({{ syslog_tls_port }})
+        transport("tls")
+        tls(
+            ca-file("{{ syslog_tls_directory }}/ca.crt")
+            cert-file("{{ syslog_tls_directory }}/tls.crt")
+            key-file("{{ syslog_tls_directory }}/tls.key")
+            peer-verify("required-trusted")
+            ssl-options(no-sslv2, no-sslv3, no-tlsv1, no-tlsv11)
+        )
+        disk-buffer(
+            reliable(yes)
+            disk-buf-size({{ syslog_disk_buffer_bytes }})
+            mem-buf-size({{ syslog_memory_buffer_bytes }})
+            dir("/var/lib/syslog-ng")
+        )
+    );
+};
+
+log {
+    source(s_system);
+    destination(d_local);
+};
+
+log {
+    source(s_system);
+    destination(d_central_tls);
+    flags(flow-control);
+};
+
+log {
+    source(s_metrics);
+};
+
+log {
+    source(s_internal);
+    destination(d_local);
+};

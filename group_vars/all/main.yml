@@ -1,0 +1,51 @@
+---
+# Private PKI. The CA private key never leaves the Ansible controller.
+pki_controller_dir: "{{ lookup('env', 'HOME') }}/.ansible/syslog-ng-clickhouse/pki"
+pki_ca_common_name: Syslog Internal Root CA
+pki_organization_name: Example Organization
+pki_country_name: RU
+pki_ca_validity_days: 3650
+pki_leaf_validity_days: 397
+pki_private_key_size: 3072
+
+# syslog-ng 4.x from the official syslog-ng OSE repository.
+syslog_ng_minimum_version: 4.12.0
+syslog_ng_upgrade_packages: true
+syslog_ng_repository_url: https://ose-repo.syslog-ng.com/apt
+syslog_ng_repository_key_url: https://ose-repo.syslog-ng.com/apt/syslog-ng-ose-pub.asc
+syslog_tls_port: 6514
+syslog_tls_directory: /etc/syslog-ng/tls
+syslog_local_file: /var/log/syslog
+syslog_disk_buffer_bytes: 1073741824
+syslog_memory_buffer_bytes: 134217728
+syslog_batch_lines: 500
+syslog_batch_bytes: 8388608
+syslog_batch_timeout_ms: 1000
+syslog_http_workers: 4
+syslog_metrics_port: 9577
+syslog_metrics_scrape_frequency_limit: 10
+
+# ClickHouse. The LTS channel currently tracks the supported 26.3 LTS line.
+clickhouse_repository_channel: lts
+clickhouse_upgrade_packages: true
+clickhouse_database: syslog
+clickhouse_table: events
+clickhouse_ingest_user: syslog_ingest
+clickhouse_retention_days: 90
+clickhouse_http_host: 127.0.0.1
+clickhouse_http_port: 8123
+clickhouse_native_port: 9000
+clickhouse_metrics_port: 9363
+clickhouse_repository_url: https://packages.clickhouse.com/deb
+clickhouse_repository_key_url: https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key
+
+# Prometheus and exporters. Prometheus is intentionally loopback-only by default.
+prometheus_version: 3.13.2
+prometheus_web_listen_address: 127.0.0.1
+prometheus_web_port: 9090
+prometheus_scrape_interval: 15s
+prometheus_evaluation_interval: 15s
+prometheus_retention_time: 30d
+prometheus_retention_size: 0B
+node_exporter_version: 1.12.1
+node_exporter_port: 9100

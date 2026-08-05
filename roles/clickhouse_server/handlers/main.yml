@@ -1,0 +1,6 @@
+---
+- name: Restart ClickHouse
+  ansible.builtin.service:
+    name: clickhouse-server
+    state: restarted
+    enabled: true

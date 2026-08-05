@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.retry
+inventory/hosts.yml
+group_vars/all/vault.yml
+.artifacts/

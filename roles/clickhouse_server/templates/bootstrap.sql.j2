@@ -1,0 +1,32 @@
+CREATE DATABASE IF NOT EXISTS `{{ clickhouse_database }}`;
+
+CREATE TABLE IF NOT EXISTS `{{ clickhouse_database }}`.`{{ clickhouse_table }}`
+(
+    `event_time` DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+    `received_at` DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(1)),
+    `host` LowCardinality(String) CODEC(ZSTD(1)),
+    `source_ip` String CODEC(ZSTD(1)),
+    `program` LowCardinality(String) CODEC(ZSTD(1)),
+    `pid` String CODEC(ZSTD(1)),
+    `facility` LowCardinality(String) CODEC(ZSTD(1)),
+    `severity` LowCardinality(String) CODEC(ZSTD(1)),
+    `message` String CODEC(ZSTD(3)),
+    `raw` String CODEC(ZSTD(3))
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(event_time)
+ORDER BY (event_time, host, program)
+TTL event_time + INTERVAL {{ clickhouse_retention_days | int }} DAY DELETE
+SETTINGS index_granularity = 8192;
+
+ALTER TABLE `{{ clickhouse_database }}`.`{{ clickhouse_table }}`
+    MODIFY TTL event_time + INTERVAL {{ clickhouse_retention_days | int }} DAY DELETE;
+
+CREATE USER IF NOT EXISTS `{{ clickhouse_ingest_user }}`
+    IDENTIFIED WITH sha256_password BY '{{ clickhouse_ingest_password | replace("'", "''") }}';
+
+ALTER USER `{{ clickhouse_ingest_user }}`
+    IDENTIFIED WITH sha256_password BY '{{ clickhouse_ingest_password | replace("'", "''") }}';
+
+GRANT INSERT ON `{{ clickhouse_database }}`.`{{ clickhouse_table }}`
+    TO `{{ clickhouse_ingest_user }}`;

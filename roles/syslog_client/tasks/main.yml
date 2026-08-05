@@ -1,0 +1,25 @@
+---
+- name: Resolve the central syslog server address
+  ansible.builtin.set_fact:
+    syslog_server_inventory_name: "{{ groups['syslog_servers'][0] }}"
+    syslog_server_address: >-
+      {{ hostvars[groups['syslog_servers'][0]].syslog_transport_address | default(hostvars[groups['syslog_servers'][0]].ansible_host | default(groups['syslog_servers'][0])) }}
+
+- name: Deploy the managed client syslog-ng configuration
+  ansible.builtin.template:
+    src: syslog-ng-client.conf.j2
+    dest: /etc/syslog-ng/syslog-ng.conf
+    owner: root
+    group: root
+    mode: "0600"
+    backup: true
+  notify: Validate and restart syslog-ng
+
+- name: Schedule a restart when TLS material changed
+  ansible.builtin.debug:
+    msg: TLS certificate material changed.
+  changed_when: syslog_tls_material_changed | default(false) | bool
+  notify: Validate and restart syslog-ng
+
+- name: Apply and validate the client syslog-ng configuration
+  ansible.builtin.meta: flush_handlers

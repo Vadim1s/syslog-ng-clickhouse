@@ -1,0 +1,26 @@
+---
+all:
+  vars:
+    ansible_user: ansible
+    ansible_become: true
+    ansible_python_interpreter: /usr/bin/python3
+
+  children:
+    syslog_servers:
+      hosts:
+        log01:
+          ansible_host: 10.0.2.20
+          # Address reachable by Prometheus and used for host/syslog metrics.
+          prometheus_target_address: 10.0.2.20
+          syslog_tls_sans:
+            - DNS:log01
+            - IP:10.0.2.20
+
+    syslog_clients:
+      hosts:
+        client01:
+          ansible_host: 10.0.2.21
+          prometheus_target_address: 10.0.2.21
+          syslog_tls_sans:
+            - DNS:client01
+            - IP:10.0.2.21

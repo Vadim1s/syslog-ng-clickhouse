@@ -1,0 +1,37 @@
+---
+- name: Generate the private PKI on the Ansible controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [pki]
+  roles:
+    - role: syslog_pki
+
+- name: Configure the central log and database server
+  hosts: syslog_servers
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: syslog_common
+    - role: node_exporter
+    - role: clickhouse_server
+    - role: syslog_server
+
+- name: Configure syslog-ng clients and host metrics
+  hosts: syslog_clients
+  become: true
+  gather_facts: true
+  serial: "{{ syslog_client_serial | default('25%') }}"
+  roles:
+    - role: syslog_common
+    - role: node_exporter
+    - role: syslog_client
+
+- name: Configure Prometheus after all scrape targets exist
+  hosts: syslog_servers
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: prometheus_server

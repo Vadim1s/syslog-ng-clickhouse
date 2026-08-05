@@ -1,0 +1,140 @@
+---
+- name: Validate ClickHouse variables and secret
+  ansible.builtin.assert:
+    that:
+      - clickhouse_ingest_password is defined
+      - clickhouse_ingest_password | length >= 24
+      - clickhouse_ingest_password is match('^[A-Za-z0-9._~!@#%^*+=:-]{24,128}$')
+      - "'REPLACE_' not in clickhouse_ingest_password"
+      - clickhouse_database is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - clickhouse_table is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - clickhouse_ingest_user is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - clickhouse_retention_days | int >= 1
+      - clickhouse_repository_channel in ['stable', 'lts']
+      - ansible_facts.architecture in ['x86_64', 'aarch64']
+    fail_msg: Define a valid encrypted ClickHouse ingest password and supported repository channel.
+  no_log: true
+
+- name: Install ClickHouse repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure the ClickHouse keyring directory exists
+  ansible.builtin.file:
+    path: /usr/share/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the official ClickHouse repository signing key
+  ansible.builtin.get_url:
+    url: "{{ clickhouse_repository_key_url }}"
+    dest: /usr/share/keyrings/clickhouse-repository-key.asc
+    owner: root
+    group: root
+    mode: "0644"
+  register: clickhouse_repository_key
+
+- name: Check whether the binary ClickHouse keyring exists
+  ansible.builtin.stat:
+    path: /usr/share/keyrings/clickhouse-keyring.gpg
+  register: clickhouse_binary_keyring
+  check_mode: false
+
+- name: Convert the ClickHouse signing key to a binary keyring
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --batch
+      - --yes
+      - --dearmor
+      - --output
+      - /usr/share/keyrings/clickhouse-keyring.gpg
+      - /usr/share/keyrings/clickhouse-repository-key.asc
+  when: clickhouse_repository_key.changed or not clickhouse_binary_keyring.stat.exists
+  changed_when: true
+
+- name: Determine the Debian package architecture
+  ansible.builtin.set_fact:
+    clickhouse_deb_architecture: >-
+      {{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}
+
+- name: Configure the ClickHouse deb822 repository
+  ansible.builtin.template:
+    src: clickhouse.sources.j2
+    dest: /etc/apt/sources.list.d/clickhouse.sources
+    owner: root
+    group: root
+    mode: "0644"
+  register: clickhouse_repository
+
+- name: Install or upgrade ClickHouse server and client
+  ansible.builtin.apt:
+    name:
+      - clickhouse-server
+      - clickhouse-client
+    state: "{{ 'latest' if clickhouse_upgrade_packages | bool else 'present' }}"
+    update_cache: "{{ clickhouse_repository.changed or clickhouse_repository_key.changed }}"
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  notify: Restart ClickHouse
+
+- name: Restrict ClickHouse listeners to loopback
+  ansible.builtin.template:
+    src: listen.xml.j2
+    dest: /etc/clickhouse-server/config.d/20-listen.xml
+    owner: clickhouse
+    group: clickhouse
+    mode: "0640"
+  notify: Restart ClickHouse
+
+- name: Enable the native ClickHouse Prometheus endpoint
+  ansible.builtin.template:
+    src: prometheus.xml.j2
+    dest: /etc/clickhouse-server/config.d/30-prometheus.xml
+    owner: clickhouse
+    group: clickhouse
+    mode: "0640"
+  notify: Restart ClickHouse
+
+- name: Enable and start ClickHouse
+  ansible.builtin.service:
+    name: clickhouse-server
+    state: started
+    enabled: true
+
+- name: Apply pending ClickHouse changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the local ClickHouse native interface
+  ansible.builtin.wait_for:
+    host: "{{ clickhouse_http_host }}"
+    port: "{{ clickhouse_native_port }}"
+    timeout: 90
+
+- name: Wait for the ClickHouse Prometheus endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ clickhouse_metrics_port }}/metrics"
+    method: GET
+    status_code: 200
+  register: clickhouse_metrics_check
+  retries: 12
+  delay: 5
+  until: clickhouse_metrics_check.status == 200
+
+- name: Apply ClickHouse database, table, user, and grants
+  ansible.builtin.command:
+    argv:
+      - clickhouse-client
+      - --multiquery
+    stdin: "{{ lookup('ansible.builtin.template', 'bootstrap.sql.j2') }}"
+    stdin_add_newline: true
+  changed_when: false
+  no_log: true

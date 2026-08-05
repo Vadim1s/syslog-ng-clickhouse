@@ -1,0 +1,102 @@
+---
+- name: Validate Node Exporter architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.architecture in ['x86_64', 'aarch64']
+
+- name: Resolve Node Exporter architecture and bind address
+  ansible.builtin.set_fact:
+    node_exporter_architecture: >-
+      {{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}
+    node_exporter_bind_address_resolved: >-
+      {{ node_exporter_bind_address | default(prometheus_target_address | default(ansible_facts.default_ipv4.address)) }}
+    node_exporter_archive: >-
+      node_exporter-{{ node_exporter_version }}.linux-{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}.tar.gz
+
+- name: Create the Node Exporter system account
+  ansible.builtin.user:
+    name: node-exporter
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/node_exporter
+    create_home: false
+
+- name: Create the Node Exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    owner: node-exporter
+    group: node-exporter
+    mode: "0750"
+
+- name: Check the installed Node Exporter version
+  ansible.builtin.command: "{{ node_exporter_install_dir }}/node_exporter --version"
+  register: node_exporter_version_output
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install the selected Node Exporter release
+  when: node_exporter_version not in node_exporter_version_output.stdout
+  block:
+    - name: Download Node Exporter with the upstream checksum manifest
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_architecture }}.tar.gz
+        dest: "/tmp/{{ node_exporter_archive }}"
+        mode: "0644"
+        checksum: >-
+          sha256:https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/sha256sums.txt
+
+    - name: Extract Node Exporter
+      ansible.builtin.unarchive:
+        src: "/tmp/{{ node_exporter_archive }}"
+        dest: /tmp
+        remote_src: true
+
+    - name: Install the Node Exporter binary
+      ansible.builtin.copy:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_architecture }}/node_exporter"
+        dest: "{{ node_exporter_install_dir }}/node_exporter"
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+      notify: Restart node_exporter
+
+    - name: Remove temporary Node Exporter files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/{{ node_exporter_archive }}"
+        - "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_architecture }}"
+
+- name: Install the Node Exporter systemd service
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Enable and start Node Exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Apply pending Node Exporter changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the Node Exporter endpoint
+  ansible.builtin.uri:
+    url: "http://{{ node_exporter_bind_address_resolved }}:{{ node_exporter_port }}/metrics"
+    method: GET
+    status_code: 200
+  register: node_exporter_metrics_check
+  retries: 6
+  delay: 3
+  until: node_exporter_metrics_check.status == 200

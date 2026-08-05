@@ -1,0 +1,117 @@
+---
+- name: Create a unique verification marker
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Store the verification run identifier
+      ansible.builtin.set_fact:
+        verification_run_id: "{{ now(utc=true, fmt='%Y%m%dT%H%M%S%f') }}"
+
+- name: Verify services and exporters on every managed host
+  hosts: syslog_servers:syslog_clients
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Validate syslog-ng syntax
+      ansible.builtin.command: syslog-ng --syntax-only
+      changed_when: false
+
+    - name: Verify the native syslog-ng Prometheus endpoint
+      ansible.builtin.uri:
+        url: >-
+          http://{{ syslog_metrics_bind_address | default(prometheus_target_address | default(ansible_facts.default_ipv4.address)) }}:{{ syslog_metrics_port }}/metrics
+        method: GET
+        status_code: 200
+
+    - name: Verify the Node Exporter endpoint
+      ansible.builtin.uri:
+        url: >-
+          http://{{ node_exporter_bind_address | default(prometheus_target_address | default(ansible_facts.default_ipv4.address)) }}:{{ node_exporter_port }}/metrics
+        method: GET
+        status_code: 200
+
+- name: Verify central services
+  hosts: syslog_servers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check ClickHouse health
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ clickhouse_http_port }}/ping"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: clickhouse_ping
+      failed_when: clickhouse_ping.content | trim != 'Ok.'
+
+    - name: Check ClickHouse metrics
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ clickhouse_metrics_port }}/metrics"
+        method: GET
+        status_code: 200
+
+    - name: Check Prometheus readiness
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ prometheus_web_port }}/-/ready"
+        method: GET
+        status_code: 200
+
+    - name: Check Prometheus targets API
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ prometheus_web_port }}/api/v1/targets"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: prometheus_targets
+      failed_when: prometheus_targets.json.status != 'success'
+
+    - name: Confirm every configured Prometheus target is healthy
+      ansible.builtin.assert:
+        that:
+          - prometheus_targets.json.data.activeTargets | length == 2 + 2 * ((groups['syslog_servers'] | length) + (groups['syslog_clients'] | length))
+          - prometheus_targets.json.data.activeTargets | rejectattr('health', 'equalto', 'up') | list | length == 0
+        fail_msg: >-
+          One or more Prometheus targets are absent or unhealthy. Inspect
+          http://127.0.0.1:{{ prometheus_web_port }}/targets through an SSH tunnel.
+
+- name: Emit one verification message from every client
+  hosts: syslog_clients
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Emit the verification event
+      ansible.builtin.command:
+        argv:
+          - logger
+          - -t
+          - syslog-ng-clickhouse-check
+          - "run={{ hostvars['localhost'].verification_run_id }} host={{ inventory_hostname }}"
+      changed_when: true
+
+- name: Confirm end-to-end delivery in ClickHouse
+  hosts: syslog_servers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait until all client verification events are stored
+      ansible.builtin.command:
+        argv:
+          - clickhouse-client
+          - --query
+          - >-
+            SELECT count()
+            FROM {{ clickhouse_database }}.{{ clickhouse_table }}
+            WHERE program = 'syslog-ng-clickhouse-check'
+              AND position(message, 'run={{ hostvars['localhost'].verification_run_id }}') > 0
+      register: verification_count
+      changed_when: false
+      retries: 12
+      delay: 5
+      until: (verification_count.stdout | int) >= (groups['syslog_clients'] | length)
+
+    - name: Report successful end-to-end verification
+      ansible.builtin.debug:
+        msg: >-
+          Stored {{ verification_count.stdout | trim }} of {{ groups['syslog_clients'] | length }}
+          expected verification events for run {{ hostvars['localhost'].verification_run_id }}.

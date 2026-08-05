@@ -1,0 +1,165 @@
+---
+- name: Validate supported operating system and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'Debian'
+      - ansible_facts.distribution in ['Debian', 'Ubuntu']
+      - >-
+        (ansible_facts.distribution == 'Debian' and (ansible_facts.distribution_major_version | int) in [12, 13])
+        or
+        (ansible_facts.distribution == 'Ubuntu' and ansible_facts.distribution_version in ['24.04', '26.04'])
+      - ansible_facts.architecture in ['x86_64', 'aarch64']
+    fail_msg: This revision targets Debian 12/13 or Ubuntu 24.04/26.04 LTS on amd64/arm64.
+
+- name: Determine syslog-ng repository identifiers
+  ansible.builtin.set_fact:
+    syslog_ng_deb_architecture: >-
+      {{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}
+    syslog_ng_repository_component: >-
+      {{ ansible_facts.distribution | lower }}-{{ ansible_facts.distribution_release }}{{ '-arm64' if ansible_facts.architecture == 'aarch64' else '' }}
+    syslog_metrics_bind_address_resolved: >-
+      {{ syslog_metrics_bind_address | default(prometheus_target_address | default(ansible_facts.default_ipv4.address)) }}
+
+- name: Install syslog-ng repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - openssl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure the APT keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the official syslog-ng repository signing key
+  ansible.builtin.get_url:
+    url: "{{ syslog_ng_repository_key_url }}"
+    dest: /etc/apt/keyrings/syslog-ng-ose.asc
+    owner: root
+    group: root
+    mode: "0644"
+  register: syslog_ng_repository_key
+
+- name: Check whether the binary syslog-ng keyring exists
+  ansible.builtin.stat:
+    path: /etc/apt/keyrings/syslog-ng-ose.gpg
+  register: syslog_ng_binary_keyring
+  check_mode: false
+
+- name: Convert the syslog-ng signing key to a binary keyring
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --batch
+      - --yes
+      - --dearmor
+      - --output
+      - /etc/apt/keyrings/syslog-ng-ose.gpg
+      - /etc/apt/keyrings/syslog-ng-ose.asc
+  when: syslog_ng_repository_key.changed or not syslog_ng_binary_keyring.stat.exists
+  changed_when: true
+
+- name: Configure the official syslog-ng OSE repository
+  ansible.builtin.template:
+    src: syslog-ng.sources.j2
+    dest: /etc/apt/sources.list.d/syslog-ng-ose.sources
+    owner: root
+    group: root
+    mode: "0644"
+  register: syslog_ng_repository
+
+- name: Install or upgrade syslog-ng and the HTTP module
+  ansible.builtin.apt:
+    name:
+      - syslog-ng
+      - syslog-ng-mod-http
+    state: "{{ 'latest' if syslog_ng_upgrade_packages | bool else 'present' }}"
+    update_cache: "{{ syslog_ng_repository.changed or syslog_ng_repository_key.changed }}"
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Read the installed syslog-ng version
+  ansible.builtin.command: syslog-ng --version
+  register: syslog_ng_version_output
+  changed_when: false
+  check_mode: false
+
+- name: Extract the installed syslog-ng version
+  ansible.builtin.set_fact:
+    syslog_ng_installed_version: >-
+      {{ syslog_ng_version_output.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+') | default('0.0.0', true) }}
+
+- name: Validate the installed syslog-ng version
+  ansible.builtin.assert:
+    that:
+      - syslog_ng_installed_version is version(syslog_ng_minimum_version, '>=')
+    fail_msg: >-
+      syslog-ng {{ syslog_ng_installed_version }} is too old; version
+      {{ syslog_ng_minimum_version }} or newer is required.
+
+- name: Create the syslog-ng TLS directory
+  ansible.builtin.file:
+    path: "{{ syslog_tls_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the private CA certificate
+  ansible.builtin.copy:
+    src: "{{ pki_controller_dir }}/ca/ca.crt"
+    dest: "{{ syslog_tls_directory }}/ca.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  register: syslog_ca_copy
+
+- name: Install the host certificate
+  ansible.builtin.copy:
+    src: "{{ pki_controller_dir }}/hosts/{{ inventory_hostname }}/tls.crt"
+    dest: "{{ syslog_tls_directory }}/tls.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  register: syslog_certificate_copy
+
+- name: Install the host private key
+  ansible.builtin.copy:
+    src: "{{ pki_controller_dir }}/hosts/{{ inventory_hostname }}/tls.key"
+    dest: "{{ syslog_tls_directory }}/tls.key"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  register: syslog_private_key_copy
+
+- name: Record whether TLS material changed
+  ansible.builtin.set_fact:
+    syslog_tls_material_changed: >-
+      {{ syslog_ca_copy.changed or syslog_certificate_copy.changed or syslog_private_key_copy.changed }}
+
+- name: Ensure the syslog-ng disk-buffer directory exists
+  ansible.builtin.file:
+    path: /var/lib/syslog-ng
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Ensure the local log file exists
+  ansible.builtin.file:
+    path: "{{ syslog_local_file }}"
+    state: touch
+    owner: root
+    group: adm
+    mode: "0640"
+    modification_time: preserve
+    access_time: preserve

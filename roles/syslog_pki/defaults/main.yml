@@ -1,0 +1,8 @@
+---
+pki_controller_dir: "{{ lookup('env', 'HOME') }}/.ansible/syslog-ng-clickhouse/pki"
+pki_ca_common_name: Syslog Internal Root CA
+pki_organization_name: Example Organization
+pki_country_name: RU
+pki_ca_validity_days: 3650
+pki_leaf_validity_days: 825
+pki_private_key_size: 3072

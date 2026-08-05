@@ -1,0 +1,14 @@
+---
+prometheus_version: 3.13.2
+prometheus_install_dir: /usr/local/bin
+prometheus_config_dir: /etc/prometheus
+prometheus_data_dir: /var/lib/prometheus
+prometheus_web_listen_address: 127.0.0.1
+prometheus_web_port: 9090
+prometheus_scrape_interval: 15s
+prometheus_evaluation_interval: 15s
+prometheus_retention_time: 30d
+prometheus_retention_size: 0B
+node_exporter_port: 9100
+syslog_metrics_port: 9577
+clickhouse_metrics_port: 9363

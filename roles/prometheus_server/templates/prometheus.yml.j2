@@ -1,0 +1,41 @@
+global:
+  scrape_interval: {{ prometheus_scrape_interval }}
+  evaluation_interval: {{ prometheus_evaluation_interval }}
+  external_labels:
+    deployment: syslog-ng-clickhouse
+
+rule_files:
+  - "{{ prometheus_config_dir }}/rules/*.yml"
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "127.0.0.1:{{ prometheus_web_port }}"
+
+  - job_name: clickhouse
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "127.0.0.1:{{ clickhouse_metrics_port }}"
+        labels:
+          inventory_host: "{{ inventory_hostname }}"
+
+  - job_name: node
+    static_configs:
+{% for host in groups['syslog_servers'] + groups['syslog_clients'] %}
+      - targets:
+          - "{{ hostvars[host].prometheus_target_address | default(hostvars[host].ansible_host | default(host)) }}:{{ node_exporter_port }}"
+        labels:
+          inventory_host: "{{ host }}"
+{% endfor %}
+
+  - job_name: syslog_ng
+    metrics_path: /metrics
+    static_configs:
+{% for host in groups['syslog_servers'] + groups['syslog_clients'] %}
+      - targets:
+          - "{{ hostvars[host].prometheus_target_address | default(hostvars[host].ansible_host | default(host)) }}:{{ syslog_metrics_port }}"
+        labels:
+          inventory_host: "{{ host }}"
+{% endfor %}

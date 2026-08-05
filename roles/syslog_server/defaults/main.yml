@@ -1,0 +1,10 @@
+---
+syslog_tls_port: 6514
+syslog_batch_lines: 500
+syslog_batch_bytes: 8388608
+syslog_batch_timeout_ms: 1000
+syslog_http_workers: 4
+syslog_disk_buffer_bytes: 1073741824
+syslog_memory_buffer_bytes: 134217728
+syslog_metrics_port: 9577
+syslog_metrics_scrape_frequency_limit: 10

@@ -1,0 +1,114 @@
+@version: 4.12
+@include "scl.conf"
+
+options {
+    chain-hostnames(no);
+    create-dirs(yes);
+    flush-lines(1);
+    keep-hostname(yes);
+    stats-freq(0);
+    stats-level(2);
+    threaded(yes);
+    ts-format(iso);
+    use-dns(no);
+};
+
+source s_system {
+    system();
+};
+
+source s_internal {
+    internal();
+};
+
+source s_metrics {
+    stats-exporter-dont-log(
+        ip("{{ syslog_metrics_bind_address_resolved }}")
+        port({{ syslog_metrics_port }})
+        stat-type("stats")
+        stat-format("prometheus")
+        scrape-pattern("GET /metrics*")
+        scrape-freq-limit({{ syslog_metrics_scrape_frequency_limit }})
+        single-instance(yes)
+    );
+};
+
+source s_network_tls {
+    network(
+        ip("0.0.0.0")
+        port({{ syslog_tls_port }})
+        transport("tls")
+        max-connections(1000)
+        log-iw-size(200000)
+        tls(
+            ca-file("{{ syslog_tls_directory }}/ca.crt")
+            cert-file("{{ syslog_tls_directory }}/tls.crt")
+            key-file("{{ syslog_tls_directory }}/tls.key")
+            peer-verify("required-trusted")
+            ssl-options(no-sslv2, no-sslv3, no-tlsv1, no-tlsv11)
+        )
+    );
+};
+
+destination d_local {
+    file(
+        "{{ syslog_local_file }}"
+        owner("root")
+        group("adm")
+        perm(0640)
+        create-dirs(yes)
+    );
+};
+
+destination d_clickhouse {
+    http(
+        url("http://{{ clickhouse_http_host }}:{{ clickhouse_http_port }}/?query=INSERT%20INTO%20{{ clickhouse_database }}.{{ clickhouse_table }}%20FORMAT%20JSONEachRow&date_time_input_format=best_effort")
+        method("POST")
+        user("{{ clickhouse_ingest_user }}")
+        password("{{ clickhouse_ingest_password }}")
+        headers("Content-Type: application/x-ndjson")
+        msg-data-in-header(no)
+        body("$(format-json event_time=\"${ISODATE}\" received_at=\"${R_ISODATE}\" host=\"${HOST}\" source_ip=\"${SOURCEIP}\" program=\"${PROGRAM}\" pid=\"${PID}\" facility=\"${FACILITY}\" severity=\"${LEVEL}\" message=\"${MESSAGE}\" raw=\"${MSG}\")")
+        delimiter("\n")
+        batch-lines({{ syslog_batch_lines }})
+        batch-bytes({{ syslog_batch_bytes }})
+        batch-timeout({{ syslog_batch_timeout_ms }})
+        workers({{ syslog_http_workers }})
+        retries(5)
+        time-reopen(5)
+        disk-buffer(
+            reliable(yes)
+            disk-buf-size({{ syslog_disk_buffer_bytes }})
+            mem-buf-size({{ syslog_memory_buffer_bytes }})
+            dir("/var/lib/syslog-ng")
+        )
+    );
+};
+
+log {
+    source(s_system);
+    destination(d_local);
+};
+
+log {
+    source(s_system);
+    destination(d_clickhouse);
+    flags(flow-control);
+};
+
+log {
+    source(s_network_tls);
+    destination(d_clickhouse);
+    flags(flow-control);
+};
+
+# The exporter responds directly and intentionally produces no log messages.
+log {
+    source(s_metrics);
+};
+
+# Keep syslog-ng diagnostics out of ClickHouse to prevent feedback loops.
+log {
+    source(s_internal);
+    destination(d_local);
+};

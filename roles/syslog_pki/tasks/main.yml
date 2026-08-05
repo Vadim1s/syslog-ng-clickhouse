@@ -1,0 +1,105 @@
+---
+- name: Validate inventory groups used by the PKI
+  ansible.builtin.assert:
+    that:
+      - groups['syslog_servers'] is defined
+      - groups['syslog_servers'] | length == 1
+      - groups['syslog_clients'] is defined
+      - groups['syslog_clients'] | length >= 1
+    fail_msg: Exactly one host must be present in syslog_servers, and at least one host must be present in syslog_clients.
+
+- name: Build the list of certificate hosts
+  ansible.builtin.set_fact:
+    pki_certificate_hosts: "{{ (groups['syslog_servers'] + groups['syslog_clients']) | unique }}"
+
+- name: Validate certificate subject alternative names
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].syslog_tls_sans is defined
+      - hostvars[item].syslog_tls_sans | length > 0
+      - hostvars[item].syslog_tls_sans | select('match', '^(DNS|IP):.+$') | list | length == hostvars[item].syslog_tls_sans | length
+    fail_msg: "Host {{ item }} must define at least one syslog_tls_sans entry in DNS:name or IP:address form."
+  loop: "{{ pki_certificate_hosts }}"
+
+- name: Create protected PKI directories on the controller
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ pki_controller_dir }}", mode: "0700" }
+    - { path: "{{ pki_controller_dir }}/ca", mode: "0700" }
+    - { path: "{{ pki_controller_dir }}/hosts", mode: "0700" }
+
+- name: Generate the CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ pki_controller_dir }}/ca/ca.key"
+    size: "{{ pki_private_key_size }}"
+    type: RSA
+    mode: "0600"
+
+- name: Generate the CA certificate signing request
+  community.crypto.openssl_csr:
+    path: "{{ pki_controller_dir }}/ca/ca.csr"
+    privatekey_path: "{{ pki_controller_dir }}/ca/ca.key"
+    common_name: "{{ pki_ca_common_name }}"
+    organization_name: "{{ pki_organization_name }}"
+    country_name: "{{ pki_country_name }}"
+    basic_constraints:
+      - CA:TRUE
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+
+- name: Issue the self-signed CA certificate
+  community.crypto.x509_certificate:
+    path: "{{ pki_controller_dir }}/ca/ca.crt"
+    csr_path: "{{ pki_controller_dir }}/ca/ca.csr"
+    privatekey_path: "{{ pki_controller_dir }}/ca/ca.key"
+    provider: selfsigned
+    selfsigned_not_after: "+{{ pki_ca_validity_days }}d"
+    mode: "0644"
+
+- name: Create per-host private directories
+  ansible.builtin.file:
+    path: "{{ pki_controller_dir }}/hosts/{{ item }}"
+    state: directory
+    mode: "0700"
+  loop: "{{ pki_certificate_hosts }}"
+
+- name: Generate per-host private keys
+  community.crypto.openssl_privatekey:
+    path: "{{ pki_controller_dir }}/hosts/{{ item }}/tls.key"
+    size: "{{ pki_private_key_size }}"
+    type: RSA
+    mode: "0600"
+  loop: "{{ pki_certificate_hosts }}"
+
+- name: Generate per-host certificate signing requests
+  community.crypto.openssl_csr:
+    path: "{{ pki_controller_dir }}/hosts/{{ item }}/tls.csr"
+    privatekey_path: "{{ pki_controller_dir }}/hosts/{{ item }}/tls.key"
+    common_name: "{{ item }}"
+    organization_name: "{{ pki_organization_name }}"
+    country_name: "{{ pki_country_name }}"
+    subject_alt_name: "{{ hostvars[item].syslog_tls_sans | default(['DNS:' ~ item]) }}"
+    key_usage:
+      - digitalSignature
+      - keyEncipherment
+    extended_key_usage:
+      - serverAuth
+      - clientAuth
+  loop: "{{ pki_certificate_hosts }}"
+
+- name: Sign per-host certificates with the private CA
+  community.crypto.x509_certificate:
+    path: "{{ pki_controller_dir }}/hosts/{{ item }}/tls.crt"
+    csr_path: "{{ pki_controller_dir }}/hosts/{{ item }}/tls.csr"
+    provider: ownca
+    ownca_path: "{{ pki_controller_dir }}/ca/ca.crt"
+    ownca_privatekey_path: "{{ pki_controller_dir }}/ca/ca.key"
+    ownca_not_after: "+{{ pki_leaf_validity_days }}d"
+    mode: "0644"
+  loop: "{{ pki_certificate_hosts }}"

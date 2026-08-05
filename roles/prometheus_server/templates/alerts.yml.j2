@@ -1,0 +1,44 @@
+groups:
+  - name: platform-health
+    rules:
+      - alert: MonitoringTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Monitoring target is unavailable"
+          description: "Prometheus cannot scrape {% raw %}{{ $labels.job }}{% endraw %} target {% raw %}{{ $labels.instance }}{% endraw %} for more than 2 minutes."
+
+      - alert: HostDiskSpaceLow
+        expr: >-
+          (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs|overlay|squashfs",mountpoint!~"/run($|/)|/var/lib/docker/overlay2"}
+            /
+            node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs|overlay|squashfs",mountpoint!~"/run($|/)|/var/lib/docker/overlay2"}
+          ) < 0.15
+          and node_filesystem_readonly == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Less than 15% filesystem space remains"
+          description: "Filesystem {% raw %}{{ $labels.mountpoint }}{% endraw %} on {% raw %}{{ $labels.instance }}{% endraw %} is running out of free space."
+
+      - alert: HostMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Less than 10% host memory remains"
+          description: "Host {% raw %}{{ $labels.instance }}{% endraw %} has sustained memory pressure."
+
+      - alert: PrometheusRuleEvaluationFailures
+        expr: increase(prometheus_rule_evaluation_failures_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus rule evaluation failed"
+          description: "Prometheus recorded rule evaluation failures during the last five minutes."

@@ -1,0 +1,9 @@
+---
+syslog_ng_minimum_version: 4.12.0
+syslog_ng_upgrade_packages: true
+syslog_ng_repository_url: https://ose-repo.syslog-ng.com/apt
+syslog_ng_repository_key_url: https://ose-repo.syslog-ng.com/apt/syslog-ng-ose-pub.asc
+syslog_tls_directory: /etc/syslog-ng/tls
+syslog_local_file: /var/log/syslog
+syslog_metrics_port: 9577
+syslog_metrics_scrape_frequency_limit: 10

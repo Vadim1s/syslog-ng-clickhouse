@@ -1,0 +1,12 @@
+---
+- name: Validate syslog-ng configuration
+  ansible.builtin.command: syslog-ng --syntax-only
+  changed_when: false
+  listen: Validate and restart syslog-ng
+
+- name: Restart syslog-ng service
+  ansible.builtin.service:
+    name: syslog-ng
+    state: restarted
+    enabled: true
+  listen: Validate and restart syslog-ng

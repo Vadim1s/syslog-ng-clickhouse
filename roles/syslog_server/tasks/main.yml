@@ -1,0 +1,32 @@
+---
+- name: Validate central-server topology
+  ansible.builtin.assert:
+    that:
+      - groups['syslog_servers'] | length == 1
+      - inventory_hostname == groups['syslog_servers'][0]
+
+- name: Deploy the managed central syslog-ng configuration
+  ansible.builtin.template:
+    src: syslog-ng-server.conf.j2
+    dest: /etc/syslog-ng/syslog-ng.conf
+    owner: root
+    group: root
+    mode: "0600"
+    backup: true
+  no_log: true
+  notify: Validate and restart syslog-ng
+
+- name: Schedule a restart when TLS material changed
+  ansible.builtin.debug:
+    msg: TLS certificate material changed.
+  changed_when: syslog_tls_material_changed | default(false) | bool
+  notify: Validate and restart syslog-ng
+
+- name: Apply and validate the central syslog-ng configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the mutual-TLS syslog listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ syslog_tls_port }}"
+    timeout: 30
